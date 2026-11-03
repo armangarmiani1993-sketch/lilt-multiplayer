@@ -1,0 +1,15 @@
+{
+  "name": "lilt-mythic-pairs",
+  "version": "1.0.0",
+  "private": true,
+  "description": "A two-to-eight-player memory game",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "socket.io": "^4.8.1"
+  }
+}
