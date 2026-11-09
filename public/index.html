@@ -1,0 +1,603 @@
+<!doctype html>
+<html lang="en-CA">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Lilt — Mythic Pairs</title>
+<style>
+:root{
+  --bg:#202125;--card:#2A2B2F;--text:#F6F3FA;
+  --muted:#D7D0DF;--accent:#C8A2E0;--border:#938B9D;
+}
+*{box-sizing:border-box}
+body{
+  margin:0;background:var(--bg);color:var(--text);
+  font:16px/1.55 system-ui,-apple-system,"Segoe UI",sans-serif;
+}
+body.light{
+  --bg:#F6F2FA;--card:#fff;--text:#25212B;
+  --muted:#514959;--border:#776C81;
+}
+header,main,footer{max-width:850px;margin:auto;padding:18px}
+header{display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap}
+.brand{font-weight:800;font-size:1.4rem}
+h1{font-size:clamp(2rem,7vw,3rem);line-height:1.15;letter-spacing:-.04em}
+h2{font-size:1.3rem}
+button,input{font:inherit}
+button{
+  min-height:44px;padding:11px 15px;border-radius:13px;
+  border:1px solid var(--border);background:var(--card);
+  color:var(--text);cursor:pointer;
+}
+button.primary{
+  background:var(--accent);color:#25212B;font-weight:750;
+}
+button:disabled{opacity:.6;cursor:default}
+button:focus-visible,input:focus-visible,summary:focus-visible,a:focus-visible{
+  outline:3px solid var(--accent);outline-offset:4px;
+}
+input{
+  width:100%;padding:12px;min-height:48px;margin-top:6px;
+  border:1px solid var(--border);border-radius:12px;
+  background:var(--bg);color:var(--text);
+}
+label{display:block;margin:14px 0}
+.card{
+  padding:21px;margin:16px 0;border:1px solid var(--border);
+  border-radius:22px;background:var(--card);
+}
+.row{display:flex;gap:9px;align-items:center;flex-wrap:wrap}
+.two{display:grid;grid-template-columns:1fr 1fr;gap:15px}
+.two .card{margin:0}
+.muted,small{color:var(--muted)}
+small{font-size:.875rem}
+.board{display:grid;grid-template-columns:repeat(4,1fr);gap:9px}
+.tile{
+  min-height:112px;display:flex;flex-direction:column;
+  align-items:center;justify-content:center;gap:5px;
+  padding:9px;word-break:break-word;
+}
+.tile .symbol{font-size:2rem;line-height:1}
+.tile .name{font-size:.8rem}
+.tile.matched{border:2px solid var(--accent);background:#C8A2E012}
+.tile.matched:disabled{opacity:1}
+.tile:disabled:not(.matched){opacity:.75}
+.player{
+  display:flex;justify-content:space-between;gap:10px;
+  border-bottom:1px solid var(--border);padding:10px 0;
+}
+.player.turn{font-weight:750;color:var(--accent)}
+body.light .player.turn{color:#653B7E}
+.hero{position:relative;padding-right:105px}
+.ring{
+  position:absolute;right:22px;top:30px;width:65px;height:65px;
+  border-radius:50%;overflow:hidden;
+}
+.ring:before{
+  content:"";position:absolute;inset:-20%;
+  background:conic-gradient(#C8A2E0,#9DDED6,#2A2B2F,#C8A2E0);
+  animation:spin 18s linear infinite;
+}
+.ring:after{
+  content:"";position:absolute;inset:5px;border-radius:50%;
+  background:var(--card);
+}
+@keyframes spin{to{transform:rotate(360deg)}}
+body.still *:before{animation:none!important}
+@media(prefers-reduced-motion:reduce){*:*{animation:none} .ring:before{animation:none}}
+summary{min-height:44px;padding:9px 0;cursor:pointer;font-weight:700}
+#notice{min-height:28px;margin:0}
+#connection{font-size:.9rem}
+.code{font-size:1.6rem;letter-spacing:.12em;font-weight:800}
+.warning{border-left:4px solid var(--accent);padding-left:13px}
+a{color:var(--text)}
+@media(max-width:550px){
+  .two{grid-template-columns:1fr}
+  .tile{min-height:94px;padding:6px}
+  .tile .name{font-size:.72rem}
+  header,main,footer{padding:15px}
+  .card{padding:17px}
+}
+</style>
+</head>
+<body>
+<header>
+  <div class="brand">◯ Lilt · Mythic Pairs</div>
+  <div class="row">
+    <button id="language"></button>
+    <button id="theme"></button>
+    <button id="motion"></button>
+  </div>
+</header>
+
+<main>
+  <p id="connection" role="status" aria-live="polite"></p>
+  <p id="notice" role="status" aria-live="polite"></p>
+  <div id="app"></div>
+  <div id="rules"></div>
+</main>
+
+<footer id="footer"></footer>
+
+<script src="/socket.io/socket.io.js"></script>
+<script>
+"use strict";
+
+const $ = id => document.getElementById(id);
+let language = "en";
+let light = false;
+let motion = true;
+let room = null;
+let identity = null;
+let ready = false;
+let pending = false;
+let saved = null;
+
+try {
+  saved = JSON.parse(sessionStorage.getItem("lilt-player") || "null");
+} catch {}
+
+const socket = io();
+const T = (en,fr) => language === "fr" ? fr : en;
+const bilingual = text => text?.[language === "fr" ? 1 : 0] || "";
+const E = text => String(text ?? "").replace(/[&<>"']/g,c=>({
+  "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"
+}[c]));
+
+const errors = {
+  missing:["Room not found. Check the code.","Salle introuvable. Vérifie le code."],
+  expired:["Session expired. Create or join a new room.","Séance expirée. Crée ou rejoins une nouvelle salle."],
+  full:["This room already has eight players.","Cette salle compte déjà huit joueurs."],
+  started:["The game has already started.","La partie a déjà commencé."],
+  host:["Only the current host can do that.","Seul l’hôte actuel peut faire ça."],
+  two:["At least two connected players are required.","Il faut au moins deux joueurs connectés."],
+  turn:["Wait for your turn.","Attends ton tour."],
+  busy:["The current attempt is still resolving.","La tentative actuelle n’est pas terminée."],
+  stale:["The board changed. Try again.","Le plateau a changé. Réessaie."],
+  tile:["That tile cannot be selected.","Cette tuile ne peut pas être choisie."],
+  phase:["That action is not available now.","Cette action n’est pas disponible maintenant."],
+  slow:["Too many requests. Wait a moment.","Trop de demandes. Attends un instant."],
+  already:["You are already in a room.","Tu es déjà dans une salle."],
+  capacity:["The server is full. Try later.","Le serveur est complet. Réessaie plus tard."],
+  online:["That player is still connected.","Ce joueur est toujours connecté."]
+};
+
+function notify(text) {
+  $("notice").textContent = text;
+}
+
+function storeCredentials(data) {
+  saved = {code:data.code,token:data.token};
+  identity = data.id;
+  try {
+    sessionStorage.setItem("lilt-player",JSON.stringify(saved));
+  } catch {
+    notify(T(
+      "Session storage unavailable. Reloading may lose your player seat.",
+      "Stockage de séance indisponible. Un rechargement pourrait perdre ta place."
+    ));
+  }
+}
+
+function clearCredentials() {
+  saved = null;
+  try { sessionStorage.removeItem("lilt-player"); } catch {}
+}
+
+function send(event,data = {},isEntry = false) {
+  if (!socket.connected || pending || (!ready && !isEntry)) return;
+
+  pending = true;
+  if (room) render();
+
+  socket.timeout(7000).emit(event,data,(error,result)=>{
+    pending = false;
+
+    if (error) {
+      if (room) render();
+      return notify(T(
+        "No confirmation received. Reconnecting to resync the game.",
+        "Aucune confirmation reçue. Reconnexion pour synchroniser la partie."
+      )), socket.disconnect(), socket.connect();
+    }
+
+    if (!result?.ok) {
+      if (room) render();
+      return notify(bilingual(errors[result?.error] || [
+        "Something went wrong.","Un problème est survenu."
+      ]));
+    }
+
+    if (isEntry) {
+      storeCredentials(result);
+      ready = true;
+      if (room) render();
+    }
+    notify("");
+  });
+}
+
+socket.on("connect",()=>{
+  pending = false;
+  ready = false;
+  updateConnection();
+
+  if (saved?.code && saved?.token) {
+    socket.timeout(7000).emit("resume",saved,(error,result)=>{
+      if (error || !result?.ok) {
+        clearCredentials();
+        identity = null;
+        room = null;
+        ready = true;
+        render();
+        notify(T(
+          "The old room is unavailable. Create or join a room.",
+          "L’ancienne salle n’est plus disponible. Crée ou rejoins une salle."
+        ));
+        return;
+      }
+      storeCredentials(result);
+      ready = true;
+      render();
+    });
+  } else {
+    ready = true;
+    render();
+  }
+});
+
+socket.on("disconnect",()=>{
+  ready = false;
+  pending = false;
+  render();
+});
+
+socket.on("state",state=>{
+  if (room && state.code === room.code && state.revision < room.revision)
+    return;
+  room = state;
+  render();
+});
+
+socket.on("replaced",()=>{
+  clearCredentials();
+  identity = null;
+  room = null;
+  ready = false;
+  socket.io.reconnection(false);
+  render();
+  notify(T(
+    "This player seat was opened in another connection. Reload to join again.",
+    "Cette place a été ouverte dans une autre connexion. Recharge pour rejoindre une salle."
+  ));
+});
+
+socket.on("expired",()=>{
+  clearCredentials();
+  room = null;
+  identity = null;
+  render();
+  notify(T(
+    "This inactive room expired. Reload to start again.",
+    "Cette salle inactive a expiré. Recharge pour recommencer."
+  ));
+});
+
+function updateConnection() {
+  $("connection").textContent = socket.connected
+    ? ready
+      ? T("● Connected","● Connecté")
+      : T("● Synchronizing…","● Synchronisation…")
+    : T("○ Disconnected — reconnecting…","○ Déconnecté — reconnexion…");
+}
+
+function disabled(condition) {
+  return condition ? "disabled" : "";
+}
+
+function render() {
+  document.documentElement.lang = language === "fr" ? "fr-CA" : "en-CA";
+  document.body.classList.toggle("light",light);
+  document.body.classList.toggle("still",!motion);
+
+  $("language").textContent = language === "en" ? "Français" : "English";
+  $("theme").textContent = light ? T("Dark","Sombre") : T("Light","Clair");
+  $("motion").textContent = motion
+    ? T("Motion: on","Animation : oui")
+    : T("Motion: off","Animation : non");
+
+  updateConnection();
+
+  $("rules").innerHTML = `
+    <details class="card">
+      <summary>${T("How to play","Comment jouer")}</summary>
+      <ol>
+        <li>${T("Two to eight players join the same room. The host starts.",
+          "Deux à huit joueurs rejoignent la même salle. L’hôte lance la partie.")}</li>
+        <li>${T("Each round has 16 tiles containing eight pairs.",
+          "Chaque manche comporte 16 tuiles formant huit paires.")}</li>
+        <li>${T("On your turn, reveal two different tiles.",
+          "À ton tour, révèle deux tuiles différentes.")}</li>
+        <li>${T("A match earns one point and remains visible.",
+          "Une paire rapporte un point et reste visible.")}</li>
+        <li>${T("A mismatch hides after a brief pause. Turns change after every attempt, including a match.",
+          "Deux tuiles différentes se cachent après une courte pause. Le tour change après chaque tentative, même une paire.")}</li>
+        <li>${T("After all pairs are found, the host starts the next round. Play three rounds.",
+          "Une fois toutes les paires trouvées, l’hôte lance la manche suivante. Il y a trois manches.")}</li>
+        <li>${T("The highest total score wins. Ties share the win.",
+          "Le meilleur total gagne. En cas d’égalité, la victoire est partagée.")}</li>
+        <li>${T("If a player disconnects on their turn, connected players can skip that turn. Play pauses when fewer than two are connected.",
+          "Si un joueur se déconnecte pendant son tour, les autres peuvent passer son tour. La partie est suspendue avec moins de deux joueurs connectés.")}</li>
+        <li>${T("Restarting after the final round requires every player’s agreement.",
+          "Recommencer après la dernière manche exige l’accord de tous les joueurs.")}</li>
+      </ol>
+    </details>`;
+
+  $("footer").innerHTML = `<small>${T(
+    "Original fictional character placeholders, not traditional mythology. Entertainment, not therapy. The server receives nicknames, room membership, connection status, and game moves. No wellness records or analytics. Session credentials stay in this browser tab. Rooms are held in server memory and disappear on server restart or after two hours of inactivity.",
+    "Personnages fictifs originaux provisoires, pas des figures mythologiques traditionnelles. Divertissement, pas une thérapie. Le serveur reçoit les surnoms, l’appartenance à une salle, l’état de connexion et les coups joués. Aucun bilan de mieux-être ni analyse d’usage. Les identifiants de séance restent dans cet onglet. Les salles restent en mémoire du serveur et disparaissent au redémarrage ou après deux heures d’inactivité."
+  )}</small>`;
+
+  if (!room) {
+    const invitation = new URLSearchParams(location.search).get("room") || "";
+    $("app").innerHTML = `
+      <div class="card hero">
+        <h1>${T("A little wonder.<br>A shared game.",
+          "Un peu de magie.<br>Un jeu partagé.")}</h1>
+        <div class="ring" aria-hidden="true"></div>
+        <p>${T("Mythic Pairs · 2–8 players","Paires mythiques · 2–8 joueurs")}</p>
+      </div>
+      <label>${T("Nickname · do not use sensitive information",
+        "Surnom · évite les informations sensibles")}
+        <input id="nickname" maxlength="24" autocomplete="off"
+          placeholder="${T("Guest","Invité")}">
+      </label>
+      <div class="two">
+        <div class="card">
+          <h2>${T("Create a room","Créer une salle")}</h2>
+          <p>${T("Invite people with a code or link.",
+            "Invite des personnes avec un code ou un lien.")}</p>
+          <button class="primary" id="create"
+            ${disabled(!ready || pending)}>
+            ${T("Create room","Créer la salle")}
+          </button>
+        </div>
+        <form id="joinForm" class="card">
+          <h2>${T("Join a room","Rejoindre une salle")}</h2>
+          <label>${T("Room code","Code de salle")}
+            <input name="code" maxlength="6" required
+              autocomplete="off" value="${E(invitation.toUpperCase())}">
+          </label>
+          <button class="primary" ${disabled(!ready || pending)}>
+            ${T("Join","Rejoindre")}
+          </button>
+        </form>
+      </div>`;
+    return;
+  }
+
+  const current = room.players.find(p=>p.id===room.turnId);
+  const myTurn = current?.id===identity;
+  const isHost = room.hostId===identity;
+  const usable = ready && !pending && socket.connected;
+  const canFlip = usable && myTurn && room.onlineCount >= 2 &&
+    room.phase==="playing" && !room.busy;
+
+  const playerList = room.players.map(player=>`
+    <div class="player ${room.phase==="playing" && player.id===room.turnId ? "turn" : ""}">
+      <span>
+        ${E(player.name)}
+        ${player.id===identity ? T("(you)","(toi)") : ""}
+        ${player.id===room.hostId ? " ♔" : ""}
+        <small>${player.connected
+          ? T("online","connecté")
+          : T("offline","déconnecté")}</small>
+      </span>
+      <strong>${player.score} ${T("pts","pts")}</strong>
+    </div>`).join("");
+
+  let content = "";
+
+  if (room.phase==="lobby") {
+    content = `
+      <div class="card">
+        <h2>${T("Waiting room","Salle d’attente")}</h2>
+        <p>${room.onlineCount}/8 ${T("connected players","joueurs connectés")}</p>
+        ${isHost
+          ? `<button id="start" class="primary"
+              ${disabled(!usable || room.onlineCount<2)}>
+              ${T("Start game","Lancer la partie")}
+             </button>`
+          : `<p>${T("The host will start the game.",
+              "L’hôte lancera la partie.")}</p>`}
+      </div>`;
+  } else {
+    let status = "";
+    if (room.phase==="playing") {
+      status = room.onlineCount < 2
+        ? T("Paused: waiting for a second connected player.",
+            "Pause : en attente d’un deuxième joueur connecté.")
+        : room.busy
+          ? T("Take a moment to remember those tiles…",
+              "Un instant pour mémoriser les tuiles…")
+          : myTurn
+            ? T("Your turn — choose two tiles.",
+                "À toi — choisis deux tuiles.")
+            : T("Turn: ","Tour : ") + (current?.name || "");
+
+      if (!current?.connected && room.onlineCount >= 2 && !room.busy) {
+        status += " " + T("The current player is offline.",
+          "Le joueur actuel est déconnecté.");
+      }
+    }
+
+    content = `
+      <div class="card">
+        <h2>${T("Round","Manche")} ${room.round}/3 · ${E(bilingual(room.setting))}</h2>
+        <p role="status" aria-live="polite">${E(status)}</p>
+        ${room.phase==="playing" && !current?.connected &&
+          room.onlineCount>=2 && !room.busy
+          ? `<button id="skip" ${disabled(!usable)}>
+              ${T("Skip disconnected player","Passer le joueur déconnecté")}
+             </button>` : ""}
+        <div class="board" aria-label="${T("Memory game board","Plateau du jeu de mémoire")}">
+          ${room.tiles.map(tile=>`
+            <button class="tile ${tile.matched ? "matched" : ""}"
+              data-tile="${tile.index}"
+              ${disabled(!canFlip || tile.matched || Boolean(tile.character))}
+              aria-label="${E(
+                T("Tile ","Tuile ") + (tile.index+1) + ": " +
+                (tile.character ? bilingual(tile.character.name) :
+                  T("hidden","cachée")) +
+                (tile.matched ? T(", matched",", paire trouvée") : "")
+              )}">
+              <span class="symbol" aria-hidden="true">${E(tile.character?.symbol || "?")}</span>
+              <span class="name">${tile.character
+                ? E(bilingual(tile.character.name))
+                : T("Tile ","Tuile ") + (tile.index+1)}</span>
+            </button>
+          `).join("")}
+        </div>
+      </div>`;
+
+    if (room.lastLore) {
+      content += `<div class="card" aria-live="polite">
+        <h2>${E(bilingual(room.lastLore.name))}</h2>
+        <p>${E(bilingual(room.lastLore.text))}</p>
+        <small>${T("Original fictional lore","Récit fictif original")}</small>
+      </div>`;
+    }
+
+    if (room.phase==="between") {
+      content += `<div class="card">
+        <h2>${T("Round complete","Manche terminée")}</h2>
+        ${isHost
+          ? `<button id="next" class="primary"
+              ${disabled(!usable || room.onlineCount<2)}>
+              ${T("Start next round","Lancer la manche suivante")}
+             </button>`
+          : `<p>${T("Waiting for the host to start the next round.",
+              "En attente de l’hôte pour la prochaine manche.")}</p>`}
+      </div>`;
+    }
+
+    if (room.phase==="finished") {
+      const winners = room.players
+        .filter(p=>room.winners.includes(p.id))
+        .map(p=>p.name).join(", ");
+      const voted = room.restartVotes.includes(identity);
+
+      content += `<div class="card">
+        <h2>${T("A shared adventure, completed.","Une aventure partagée, terminée.")}</h2>
+        <p><strong>${T("Winner(s): ","Victoire : ")}${E(winners)}</strong></p>
+        <p>${T("Restart votes: ","Votes pour recommencer : ")}
+          ${room.restartVotes.length}/${room.players.length}</p>
+        <button id="restart" class="primary"
+          ${disabled(!usable || voted)}>
+          ${voted
+            ? T("Your vote is recorded","Ton vote est enregistré")
+            : T("Agree to play again","Accepter de rejouer")}
+        </button>
+        <p><small>${T(
+          "All players must agree. If someone cannot return, create a new room.",
+          "Tous les joueurs doivent accepter. Si quelqu’un ne peut pas revenir, crée une nouvelle salle."
+        )}</small></p>
+      </div>`;
+    }
+  }
+
+  $("app").innerHTML = `
+    <div class="card">
+      <div class="row">
+        <span>${T("Room","Salle")}</span>
+        <span class="code">${E(room.code)}</span>
+        <button id="copy">${T("Copy invitation","Copier l’invitation")}</button>
+        <button id="leave">${T("Leave","Quitter")}</button>
+      </div>
+      <label>${T("Invitation link","Lien d’invitation")}
+        <input readonly value="${E(invitationLink())}"
+          aria-label="${T("Invitation link","Lien d’invitation")}">
+      </label>
+    </div>
+    ${content}
+    <div class="card">
+      <h2>${T("Players and total scores","Joueurs et scores totaux")}</h2>
+      ${playerList}
+    </div>`;
+}
+
+function invitationLink() {
+  const url = new URL(location.href);
+  url.search = "";
+  url.hash = "";
+  if (room) url.searchParams.set("room",room.code);
+  return url.toString();
+}
+
+document.addEventListener("click",async event=>{
+  const button = event.target.closest("button");
+  if (!button || button.disabled) return;
+
+  if (button.id==="language") {
+    language = language==="en" ? "fr" : "en";
+    render();
+  }
+  if (button.id==="theme") {
+    light = !light;
+    render();
+  }
+  if (button.id==="motion") {
+    motion = !motion;
+    render();
+  }
+  if (button.id==="create") {
+    send("create",{name:$("nickname").value},true);
+  }
+  if (button.dataset.tile !== undefined) {
+    send("flip",{
+      index:Number(button.dataset.tile),
+      revision:room.revision
+    });
+  }
+
+  const actions = {
+    start:"start",next:"next",skip:"skip",restart:"restart"
+  };
+  if (actions[button.id]) send(actions[button.id]);
+
+  if (button.id==="copy") {
+    try {
+      await navigator.clipboard.writeText(invitationLink());
+      notify(T("Invitation copied.","Invitation copiée."));
+    } catch {
+      notify(T(
+        "Copy the invitation from the link field.",
+        "Copie l’invitation depuis le champ du lien."
+      ));
+    }
+  }
+
+  if (button.id==="leave") {
+    if (!confirm(T(
+      "Leave this room? Your old seat may remain until the room expires.",
+      "Quitter cette salle? Ton ancienne place peut rester jusqu’à l’expiration de la salle."
+    ))) return;
+    clearCredentials();
+    location.href = location.pathname;
+  }
+});
+
+document.addEventListener("submit",event=>{
+  if (event.target.id!=="joinForm") return;
+  event.preventDefault();
+  const data = new FormData(event.target);
+  send("join",{
+    code:String(data.get("code")).trim().toUpperCase(),
+    name:$("nickname").value
+  },true);
+});
+
+render();
+</script>
+</body>
+</html>
